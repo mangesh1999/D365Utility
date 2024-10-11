@@ -1,0 +1,194 @@
+Block-wise Explanation of the Code
+1. Fetching Parameters from Configuration File
+
+
+string url = ConfigurationManager.AppSettings["Url"];
+string clientId = ConfigurationManager.AppSettings["ClientId"];
+string clientSecret = ConfigurationManager.AppSettings["ClientSecret"];
+string authority = ConfigurationManager.AppSettings["Authority"];
+
+string connectionString = $"AuthType=ClientSecret;Url={url};ClientId={clientId};ClientSecret={clientSecret};Authority={authority}";
+The application reads connection details from the app.config file (such as Url, ClientId, ClientSecret, and Authority) and constructs a connection string to authenticate with Dynamics 365 using the ServiceClient.
+2. Form and View FetchXML Queries
+
+
+var Formfetch = $@"<?xml version=""1.0"" encoding=""utf-16""?>
+    <fetch>
+        <entity name=""systemform"">
+            <attribute name=""formjson"" />
+            <attribute name=""formxml"" />
+            <attribute name=""objecttypecode"" />
+            <attribute name=""formid"" />
+            <attribute name=""name"" />
+        </entity>
+    </fetch>";
+
+var ViewFetch = $@"<?xml version=""1.0"" encoding=""utf-16""?>
+    <fetch>
+        <entity name=""savedquery"">
+            <attribute name=""fetchxml"" />
+            <attribute name=""returnedtypecode"" />
+            <attribute name=""name"" />
+            <attribute name=""savedqueryid"" />
+        </entity>
+    </fetch>";
+These blocks define two FetchXML queries:
+Formfetch retrieves system form data, including the form's XML structure.
+ViewFetch retrieves saved query (view) data, including the FetchXML associated with each view.
+3. Reading Field Data from Excel
+
+
+string excelFilePath = @"C:\Users\m.bapu.latamble\OneDrive - Accenture\Desktop\ICM\AllFieldsDEV.xlsx";
+DataTable fieldsTable = ReadExcelData(excelFilePath);
+The Excel file containing field information is loaded into a DataTable. Each row includes data such as the field’s logical name and the table name it belongs to. The method ReadExcelData is used to read the data.
+4. Connecting to Dynamics 365
+
+
+using (ServiceClient serviceClient = new ServiceClient(connectionString))
+{
+    if (serviceClient.IsReady)
+    {
+        Console.WriteLine("Connected to Dynamics 365!");
+        IOrganizationService crmService = (IOrganizationService)serviceClient;
+        ...
+    }
+}
+The application establishes a connection to Dynamics 365 using the connection string created earlier. If the connection is successful, it creates an IOrganizationService object, which is used to execute the FetchXML queries.
+5. Executing FetchXML Queries
+
+
+var resultFormFetch = crmService.RetrieveMultiple(new FetchExpression(Formfetch));
+var resultViewFetch = crmService.RetrieveMultiple(new FetchExpression(ViewFetch));
+The application executes the FetchXML queries for forms and views using crmService.RetrieveMultiple, which returns a collection of entities (forms and views) from Dynamics 365.
+6. Analyzing Field Usage
+
+
+foreach (DataRow field in fieldsTable.Rows)
+{
+    string tableName = field["TableName"].ToString();
+    string attributeName = field["logicalname"].ToString();
+    string foundIn = "Not Found";
+    string formViewName = "";
+    string formViewId = "";
+
+    var filteredForms = resultFormFetch.Entities
+        .Where(f => f.GetAttributeValue<string>("objecttypecode") == tableName).ToList();
+
+    var filteredViews = resultViewFetch.Entities
+        .Where(v => v.GetAttributeValue<string>("returnedtypecode") == tableName).ToList();
+
+    bool isUsedInForm = filteredForms.Any(f => 
+    {
+        string formXml = f.GetAttributeValue<string>("formxml") ?? string.Empty;
+        return Regex.Replace(formXml, pattern, string.Empty).Contains(attributeName);
+    });
+
+    bool isUsedInView = filteredViews.Any(v =>
+    {
+        string fetchXml = v.GetAttributeValue<string>("fetchxml") ?? string.Empty;
+        return Regex.Replace(fetchXml, pattern, string.Empty).Contains(attributeName);
+    });
+
+    if (isUsedInForm)
+    {
+        foundIn = "FormFetch";
+        formViewName = filteredForms.First().GetAttributeValue<string>("name");
+        formViewId = filteredForms.First().GetAttributeValue<Guid>("formid").ToString();
+    }
+    else if (isUsedInView)
+    {
+        foundIn = "ViewFetch";
+        formViewName = filteredViews.First().GetAttributeValue<string>("name");
+        formViewId = filteredViews.First().GetAttributeValue<Guid>("savedqueryid").ToString();
+    }
+
+    resultTable.Rows.Add(tableName, attributeName, isUsedInForm || isUsedInView ? "Used" : "Not Found", foundIn, formViewName, formViewId);
+}
+For each field in the Excel file:
+The application checks whether the field is used in any form or view by filtering forms and views that correspond to the field's table name.
+It sanitizes the form and view XML using regular expressions, then searches for the field's logical name.
+If the field is found, its usage details are recorded in a result table.
+7. Logging and Progress Tracking
+
+
+Console.WriteLine($"{checkCounter}/{totalAttributes} attributes checked. Attribute: {attributeName} | Found: {foundIn}");
+if (checkCounter % 500 == 0)
+    Console.WriteLine($"{checkCounter} attributes processed so far...");
+The code logs the progress of field checks by displaying how many fields have been processed out of the total. It also outputs progress at regular intervals to track the operation's status.
+8. Saving Results to Excel
+
+
+string outputFilePath = @"C:\Users\m.bapu.latamble\OneDrive - Accenture\Desktop\ICM\OutPutResult.xlsx";
+SaveExcelFile(outputFilePath, resultTable);
+Console.WriteLine($"Results saved to: {outputFilePath}");
+After checking all the fields, the results are saved to an Excel file. The file contains information on whether each field was used and, if so, in which form or view.
+9. Reading Excel Data Method
+
+
+static DataTable ReadExcelData(string filePath)
+{
+    DataTable dataTable = new DataTable();
+    using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read))
+    {
+        using (var reader = ExcelReaderFactory.CreateReader(stream))
+        {
+            var config = new ExcelDataSetConfiguration
+            {
+                ConfigureDataTable = _ => new ExcelDataTableConfiguration
+                {
+                    UseHeaderRow = true
+                }
+            };
+            var dataSet = reader.AsDataSet(config);
+            dataTable = dataSet.Tables[0];
+        }
+    }
+    return dataTable;
+}
+This method reads data from the Excel file and returns it as a DataTable. It uses the ExcelDataReader library to process the Excel file, assuming the first sheet contains the relevant data.
+10. Saving Data to Excel Method
+
+
+static void SaveExcelFile(string filePath, DataTable table)
+{
+    using (SpreadsheetDocument document = SpreadsheetDocument.Create(filePath, SpreadsheetDocumentType.Workbook))
+    {
+        WorkbookPart workbookPart = document.AddWorkbookPart();
+        workbookPart.Workbook = new Workbook();
+
+        WorksheetPart worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+        Worksheet worksheet = new Worksheet();
+        worksheetPart.Worksheet = worksheet;
+
+        SheetData sheetData = new SheetData();
+        worksheet.AppendChild(sheetData);
+
+        Row headerRow = new Row();
+        foreach (DataColumn column in table.Columns)
+        {
+            Cell cell = new Cell { DataType = CellValues.String, CellValue = new CellValue(column.ColumnName) };
+            headerRow.AppendChild(cell);
+        }
+        sheetData.AppendChild(headerRow);
+
+        foreach (DataRow row in table.Rows)
+        {
+            Row newRow = new Row();
+            foreach (var cellValue in row.ItemArray)
+            {
+                Cell cell = new Cell { DataType = CellValues.String, CellValue = new CellValue(cellValue.ToString()) };
+                newRow.AppendChild(cell);
+            }
+            sheetData.AppendChild(newRow);
+        }
+
+        Sheets sheets = document.WorkbookPart.Workbook.AppendChild(new Sheets());
+        Sheet sheet = new Sheet { Id = document.WorkbookPart.GetIdOfPart(worksheetPart), SheetId = 1, Name = "Results" };
+        sheets.Append(sheet);
+
+        workbookPart.Workbook.Save();
+    }
+}
+This method saves the analysis results to an Excel file using the OpenXML library. It creates a new workbook, adds the result data, and saves the file in the specified path.
+Conclusion
+This code automates the process of checking whether fields from an Excel sheet are used in forms or views within Dynamics 365. It is useful for identifying unused fields, optimizing CRM systems, and saving the results for further analysis.
